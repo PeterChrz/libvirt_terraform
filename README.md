@@ -34,3 +34,10 @@ $ virsh domifaddr hawk-master-01
  vnet37     52:54:00:82:0e:81    ipv4         192.168.122.175/24
  vnet38     52:54:00:aa:9f:c3    ipv4         10.10.10.215/24
 ```
+
+---
+
+### Still in Progress:
+- Working on fixing the ignition script which bootstraps the kubernetes cluster. Still seeing errors.
+- Need to cleanup main.tf to remove explicit references to the cluster name ("hawk" in this case), and pass all naming via the variables.tf file.
+- Remove disk sizes from main.tf and pass master and worker disk space parameters via variables.tf.

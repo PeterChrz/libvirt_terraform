@@ -91,6 +91,8 @@ resource "libvirt_ignition" "worker" {
   content = data.ct_config.worker[count.index].rendered
 }
 
+
+## Building the Master Node(s)
 # --- Master OS disk ---
 resource "libvirt_volume" "hawk_master_os_disk" {
   count  = var.master_count
@@ -135,7 +137,7 @@ resource "libvirt_domain" "hawk_masters" {
 }
 
 
-
+## Building the worker node(s)
 # --- Worker OS disks (300GB) ---
 resource "libvirt_volume" "hawk_worker_os_disks" {
   count  = var.worker_count 
