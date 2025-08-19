@@ -9,7 +9,7 @@
 ### Prerequisites: 
 - Virsh / Virtual Machine Manager installed
     - Two storage clusters configured, one to store the ISO's/QCOW's and the other for additional disk space.
-    - Two Virtual Networks one for Internet Access, the Second for Kube Cluster connectivitity.
+    - Two Virtual Networks one for Internet Access named 'default', the Second for Kube Cluster connectivitity named 'kube_net'.
 
 - Manually install the FCCT tool (https://github.com/coreos/butane/releases) and run:
     - $ sudo chmod a+x fcct; sudo mv fcct /usr/local/bin
@@ -17,8 +17,6 @@
 - Download the Fedora CoreOS qcow image and save it to your storage cluster.
     - Fedora CoreOS QEMU qcow2.xz (https://fedoraproject.org/coreos/download?stream=stable)
     - $  xz -d fedora-coreos-*.qcow2.xz
-
-- Two Network Devices within Virtual Machine Manager, one for general use named "default" and another for control plane communication named "kube_net".
 
 ---
 
