@@ -1,8 +1,9 @@
 ### \\\ HomeLab - Infra_As_Code ///
 
 ### Goal:
-- Terraform creates user selected number of master nodes and worker nodes.
-    - Terraform triggers ignition script which configures the kube cluster and any software requirements for minimum viable cluster.
+- Using Terraform to create a number of master nodes and worker nodes determined by the user.
+    - Terraform triggering an ignition script which configures the kube cluster and any software requirements for a minimum viable cluster.
+    - Adding feature to update nodes one at a time by destroying the old and deploying new nodes at a newer version. 
 
 
 ### Prerequisites: 
