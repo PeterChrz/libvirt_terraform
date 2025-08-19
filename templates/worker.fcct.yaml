@@ -1,0 +1,144 @@
+variant: fcos
+version: 1.4.0
+kernel_arguments:
+  should_exist:
+    - net.ifnames=0
+    - biosdevname=0
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-rsa <Add_Your_Private_SSH_Key_Contents>
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: ${worker_name}
+
+    # Add the official Kubernetes repo (pick your desired version stream)
+    - path: /etc/yum.repos.d/kubernetes.repo
+      mode: 0644
+      contents:
+        inline: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
+
+    # Annoying and Anger at 1am.
+    - path: /etc/sysctl.d/99-kubernetes.conf
+      mode: 0644
+      contents:
+        inline: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+    - path: /etc/modules-load.d/k8s.conf
+      mode: 0644
+      contents:
+        inline: |
+          br_netfilter
+
+    # Join script
+    # Worker package layer helper (idempotent)
+    - path: /usr/local/bin/k8s-layer.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -euo pipefail
+          wanted=(kubelet kubeadm cri-o)
+          missing=()
+          for p in "$${wanted[@]}"; do
+            rpm -q "$${p}" >/dev/null 2>&1 || missing+=("$${p}")
+          done
+          if (($${#missing[@]})); then
+            echo "Layering: $${missing[*]}"
+            rpm-ostree install -y "$${missing[@]}"
+            touch /var/lib/k8s.packages.done
+            systemctl --no-block reboot
+          else
+            echo "All k8s packages present; nothing to do."
+          fi
+
+    # Persist the join driver 
+    - path: /usr/local/bin/join-k8s.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -eux
+          
+          MASTER=${cluster_name}-master-01
+
+          # Make sure runtime + kubelet are enabled (kubeadm will write kubelet config)
+          systemctl enable --now cri-o kubelet
+
+          modprobe br_netfilter || true
+          sysctl -w net.bridge.bridge-nf-call-iptables=1 || true
+          sysctl -w net.bridge.bridge-nf-call-ip6tables=1 || true
+          sysctl -w net.ipv4.ip_forward=1
+
+          # Pull the actual kubeadm join script from master and run it
+          for i in {1..60}; do
+            if curl -fsSL "http://$MASTER:8080/kubeadm-join-worker.sh" -o /opt/kubeadm-join.sh; then
+              break
+            fi
+            echo "Waiting for master join script... ($i/60)"
+            sleep 10
+          done
+          chmod +x /opt/kubeadm-join.sh
+
+          kubeadm reset -f || true
+          /opt/kubeadm-join.sh
+
+          
+systemd:
+  units:
+
+    # Phase 1: layer packages and reboot to activate the deployment
+    - name: k8s-packages.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install Kubernetes packages (worker) via rpm-ostree and reboot
+        ConditionFirstBoot=true
+        ConditionPathExists=!/var/lib/k8s.packages.done
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/sbin/restorecon -v /usr/local/bin/k8s-layer.sh
+        ExecStart=/usr/local/bin/k8s-layer.sh
+
+        [Install]
+        WantedBy=multi-user.target
+
+    # Phase 2: join after reboot (only when kubeadm exists)
+    - name: k8s-join.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Kubernetes Worker Join
+        Wants=NetworkManager-wait-online.service
+        After=NetworkManager-wait-online.service
+        After=k8s-packages.service
+        Wants=systemd-sysctl.service
+        After=systemd-sysctl.service
+        ConditionPathExists=/var/lib/k8s.packages.done
+        ConditionPathExists=/usr/bin/kubeadm
+        ConditionPathExists=/usr/local/bin/join-k8s.sh
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/sbin/restorecon -v /usr/local/bin/join-k8s.sh
+        ExecStart=/usr/local/bin/join-k8s.sh
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target

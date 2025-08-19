@@ -1,0 +1,233 @@
+variant: fcos
+version: 1.4.0
+kernel_arguments:
+  should_exist:
+    - net.ifnames=0
+    - biosdevname=0
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys:
+        - ssh-rsa <Add_Your_Private_SSH_Key_Contents>
+storage:
+  files:
+    - path: /etc/hostname
+      mode: 0644
+      contents:
+        inline: ${master_name}
+
+    - path: /etc/yum.repos.d/kubernetes.repo
+      mode: 0644
+      contents:
+        inline: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v1.30/rpm/repodata/repomd.xml.key
+
+    # Annoying and Anger at 1am.
+    - path: /etc/sysctl.d/99-kubernetes.conf
+      mode: 0644
+      contents:
+        inline: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+    - path: /etc/modules-load.d/k8s.conf
+      mode: 0644
+      contents:
+        inline: |
+          br_netfilter
+
+    - path: /usr/local/bin/k8s-layer.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -euo pipefail
+          wanted=(kubelet kubeadm kubectl cri-o)
+          missing=()
+          for pkg in "$${wanted[@]}"; do
+            rpm -q "$${pkg}" >/dev/null 2>&1 || missing+=("$${pkg}")
+          done
+          if (($${#missing[@]})); then
+            echo "Layering: $${missing[*]}"
+            rpm-ostree install -y "$${missing[@]}"
+            touch /var/lib/k8s.packages.done
+            systemctl --no-block reboot
+          else
+            echo "All k8s packages present; nothing to do."
+          fi
+
+    - path: /usr/local/sbin/bootstrap-k8s.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -euxo pipefail
+
+          systemctl enable --now crio
+          systemctl restart crio || true
+          systemctl enable --now kubelet
+
+          # Wait for network
+          sleep 8
+
+          APISERVER_IP=$(ip -4 -o addr show dev eth1 | awk '{print $4}' | cut -d/ -f1)
+          [ -n "$APISERVER_IP" ] || { echo "Could not determine APISERVER_IP on eth1"; exit 1; }
+
+          %{ if master_is_primary }
+          # Primary master
+          CONTROL_PLANE_FLAG=""
+          %{ if control_plane_endpoint != "" }
+          CONTROL_PLANE_FLAG="--control-plane-endpoint=${control_plane_endpoint}"
+          %{ endif }
+
+          modprobe br_netfilter || true
+          sysctl -w net.bridge.bridge-nf-call-iptables=1 || true
+          sysctl -w net.bridge.bridge-nf-call-ip6tables=1 || true
+          sysctl -w net.ipv4.ip_forward=1
+
+
+          kubeadm init \
+            --pod-network-cidr=${pod_network_cidr} \
+            --apiserver-advertise-address="$APISERVER_IP" \
+            --cri-socket=unix:///var/run/crio/crio.sock \
+            $CONTROL_PLANE_FLAG
+
+          # kubectl for root
+          mkdir -p /root/.kube
+          cp /etc/kubernetes/admin.conf /root/.kube/config
+          chown -R root:root /root/.kube
+
+          # Upload certs & build join commands (include CRI socket)
+          CERT_KEY=$(kubeadm init phase upload-certs --upload-certs | tail -n1)
+          JOIN_BASE=$(kubeadm token create --print-join-command)
+
+          echo "$${JOIN_BASE} --cri-socket=unix:///var/run/crio/crio.sock" > /opt/kubeadm-join-worker.sh
+          chmod +x /opt/kubeadm-join-worker.sh
+
+          echo "$${JOIN_BASE} --control-plane --certificate-key $${CERT_KEY} --cri-socket=unix:///var/run/crio/crio.sock" > /opt/kubeadm-join-control-plane.sh
+          chmod +x /opt/kubeadm-join-control-plane.sh
+
+          # Serve join scripts
+          cd /opt
+          nohup python3 -m http.server 8080 >/var/log/join-http.log 2>&1 &
+
+          %{ else }
+          # Secondary master
+          PRIMARY_HOST="${primary_master_host}"
+          if [ -z "$PRIMARY_HOST" ]; then
+            echo "primary_master_host not set; cannot join control-plane" >&2
+            exit 1
+          fi
+
+          for i in {1..60}; do
+            if curl -fsSL "http://$${PRIMARY_HOST}:8080/kubeadm-join-control-plane.sh" -o /opt/kubeadm-join-control-plane.sh; then
+              break
+            fi
+            echo "Waiting for control-plane join script... ($i/60)"
+            sleep 10
+          done
+          chmod +x /opt/kubeadm-join-control-plane.sh
+          /opt/kubeadm-join-control-plane.sh
+          %{ endif }
+
+    - path: /usr/local/bin/cilium-helm.sh
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          set -euxo pipefail
+          export KUBECONFIG=/root/.kube/config
+
+          # Wait for kubeconfig/API to be ready
+          for i in {1..60}; do
+            [[ -f /root/.kube/config ]] && kubectl version --short && break || true
+            sleep 5
+          done
+
+          # --- Install Helm if not already present (binary drop-in) ---
+          if ! command -v helm >/dev/null 2>&1; then
+            HELM_VERSION="$${HELM_VERSION:-v3.15.2}"
+            ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64;; aarch64) ARCH=arm64;; *) echo "Unsupported arch $ARCH"; exit 1;; esac
+            curl -L --fail -o /tmp/helm.tgz "https://get.helm.sh/helm-$${HELM_VERSION}-linux-$${ARCH}.tar.gz"
+            tar -zxOf /tmp/helm.tgz linux-$${ARCH}/helm > /usr/local/bin/helm
+            chmod +x /usr/local/bin/helm
+            rm -f /tmp/helm.tgz
+          fi
+
+          # --- Cilium via Helm ---
+          helm repo add cilium https://helm.cilium.io/
+          helm repo update
+
+          helm upgrade --install cilium cilium/cilium \
+            --version 1.18.1 \
+            -n kube-system --create-namespace \
+            --set ipam.mode=kubernetes
+
+          # Wait until cilium is healthy
+          kubectl -n kube-system rollout status ds/cilium --timeout=5m
+          kubectl -n kube-system get pods -l k8s-app=cilium
+
+systemd:
+  units:
+    - name: k8s-packages.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Ensure k8s tooling installed
+        ConditionPathExists=!/var/lib/k8s.packages.done
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=oneshot
+        ExecStartPre=/usr/sbin/restorecon -v /usr/local/bin/k8s-layer.sh
+        ExecStartPre=/usr/sbin/restorecon -v /var/lib
+        ExecStart=/usr/local/bin/k8s-layer.sh
+
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: bootstrap-k8s.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Bootstrap Kubernetes Master
+        Wants=NetworkManager-wait-online.service
+        After=NetworkManager-wait-online.service
+        After=k8s-packages.service
+        After=systemd-sysctl.service
+        Wants=systemd-sysctl.service
+        ConditionPathExists=/var/lib/k8s.packages.done
+        ConditionPathExists=/usr/local/sbin/bootstrap-k8s.sh
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/bootstrap-k8s.sh
+        RemainAfterExit=true
+
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: cilium-helm-install.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Install Cilium via Helm after control-plane is up
+        After=bootstrap-k8s.service
+        Requires=bootstrap-k8s.service
+        ConditionPathExists=/root/.kube/config
+
+        [Service]
+        Type=oneshot
+        Environment=KUBECONFIG=/root/.kube/config
+        ExecStart=/usr/local/bin/cilium-helm.sh
+        RemainAfterExit=yes
+
+        [Install]
+        WantedBy=multi-user.target
