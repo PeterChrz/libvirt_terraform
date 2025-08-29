@@ -8,16 +8,7 @@ passwd:
   users:
     - name: core
       ssh_authorized_keys:
-        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC+MitVpMZ4SVNN4KOEg3oUgNQR9+N8TILT7z5pEeDdfME3SSRFo+m++NEHNpswcvLJzYJo5XjeaIpqn4L9BmAFpfXOdFLIuhkKRFx5xdXb9Rk7CHn7tSN7BNkrq2hKhH7axwPY2TmfX5wTCA0FfOgEkYEXhEp2y7Y0LfEczOJdWa/CQsHRe9Ltt5ER+g/rY7l+0zVFldjtOa6FtHoTByiPqZ7WmT65hQ/Td4o1oncWHd/iMCTxq5u62m7P23gkrODcyiNQIH8UA/dZs/uvMZKc1K7pmBW8a9/K7KmxQ03pbBy8sXC/+FIzXnmFszUdsIgrGPHqEyAODFd8NV8e5txHvYVpbjBVPdUA+JPDtI9/dshbN21PhD9u5NgVbStJHlC8COQa7uNuJgAdjoimrXVqxNy1JbNb3kl9Bw96cf2oKu5Nr1AlnstrDJyZ121bvRntGAriK1r6AjtpbX9aRF36YgKWXURUNiNLaKARUnfYQwL1y3pQ1XWf5pp6m0OJONtyc6tYQmRnXJXarzfzlMuS71SXLUdG1tTd8PZM2nc7ANd4LyhKffwr39F2OB4DaxYOA06mH8V3/6Y+kIUn9l+c0tKN0AbuI3BmOsinWLg7Hg/3oHSE1sGjZSllfKSWcoueGdsCjefszK4R/1/f+Af2kkTiQ6Cin0KSWixTjDePYw== pch@mach1 
-storage:
-  disks:
-    - device: /dev/vdb
-      wipe_table: true
-      partitions:
-        - number: 1
-          label: K8SDATA
-          start_mib: 1
-
+        - ssh-rsa <your_SSH_key>
   filesystems:
     - device: /dev/disk/by-partlabel/K8SDATA
       format: xfs
