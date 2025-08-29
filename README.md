@@ -10,6 +10,7 @@
 - Virsh / Virtual Machine Manager installed
     - Two storage clusters configured, one to store the ISO's/QCOW's and the other for additional disk space.
     - Two Virtual Networks one for Internet Access named 'default', the Second for Kube Cluster connectivitity named 'kube_net'.
+      - Bridge default network with your local network.
 
 - Manually install the FCCT tool (https://github.com/coreos/butane/releases) and run:
     - $ sudo chmod a+x fcct; sudo mv fcct /usr/local/bin
@@ -33,6 +34,8 @@ $ virsh domifaddr hawk-master-01
  vnet37     52:54:00:82:0e:81    ipv4         192.168.122.175/24
  vnet38     52:54:00:aa:9f:c3    ipv4         10.10.10.215/24
 ```
+
+---
 
 ### Divided Disks
 In the current config, each VM gets two disks. A smaller OS disk and a larger storage disk. For the master node it looks something like this.
