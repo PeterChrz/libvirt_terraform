@@ -8,8 +8,31 @@ passwd:
   users:
     - name: core
       ssh_authorized_keys:
-        - ssh-rsa <Add_Your_Private_SSH_Key_Contents>
+        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC+MitVpMZ4SVNN4KOEg3oUgNQR9+N8TILT7z5pEeDdfME3SSRFo+m++NEHNpswcvLJzYJo5XjeaIpqn4L9BmAFpfXOdFLIuhkKRFx5xdXb9Rk7CHn7tSN7BNkrq2hKhH7axwPY2TmfX5wTCA0FfOgEkYEXhEp2y7Y0LfEczOJdWa/CQsHRe9Ltt5ER+g/rY7l+0zVFldjtOa6FtHoTByiPqZ7WmT65hQ/Td4o1oncWHd/iMCTxq5u62m7P23gkrODcyiNQIH8UA/dZs/uvMZKc1K7pmBW8a9/K7KmxQ03pbBy8sXC/+FIzXnmFszUdsIgrGPHqEyAODFd8NV8e5txHvYVpbjBVPdUA+JPDtI9/dshbN21PhD9u5NgVbStJHlC8COQa7uNuJgAdjoimrXVqxNy1JbNb3kl9Bw96cf2oKu5Nr1AlnstrDJyZ121bvRntGAriK1r6AjtpbX9aRF36YgKWXURUNiNLaKARUnfYQwL1y3pQ1XWf5pp6m0OJONtyc6tYQmRnXJXarzfzlMuS71SXLUdG1tTd8PZM2nc7ANd4LyhKffwr39F2OB4DaxYOA06mH8V3/6Y+kIUn9l+c0tKN0AbuI3BmOsinWLg7Hg/3oHSE1sGjZSllfKSWcoueGdsCjefszK4R/1/f+Af2kkTiQ6Cin0KSWixTjDePYw== pch@mach1 
 storage:
+  disks:
+    - device: /dev/vdb
+      wipe_table: true
+      partitions:
+        - number: 1
+          label: K8SDATA
+          start_mib: 1
+
+  filesystems:
+    - device: /dev/disk/by-partlabel/K8SDATA
+      format: xfs
+      label: K8SDATA
+      path: /var/lib/k8s
+      with_mount_unit: true
+
+  directories:
+    - path: /var/lib/k8s/kubelet
+      mode: 0755
+    - path: /var/lib/k8s/containers
+      mode: 0700
+    - path: /var/lib/k8s/etcd
+      mode: 0700
+
   files:
     - path: /etc/hostname
       mode: 0644
@@ -36,11 +59,22 @@ storage:
           net.ipv4.ip_forward = 1
           net.bridge.bridge-nf-call-iptables = 1
           net.bridge.bridge-nf-call-ip6tables = 1
+
     - path: /etc/modules-load.d/k8s.conf
       mode: 0644
       contents:
         inline: |
           br_netfilter
+
+    # tmp file that ensures Kubelet doesn't get hung waiting for config.
+    - path: /var/lib/k8s/kubelet/config.yaml  
+      mode: 0644
+      contents:
+        inline: |
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          cgroupDriver: systemd
+          containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
 
     - path: /usr/local/bin/k8s-layer.sh
       mode: 0755
@@ -69,6 +103,13 @@ storage:
           #!/bin/bash
           set -euxo pipefail
 
+          ## Validate if script was run already.
+
+          if [ -f /etc/kubernetes/admin.conf ]; then
+            echo "Control plane already initialized; skipping bootstrap."
+            exit 0
+          fi
+
           systemctl enable --now crio
           systemctl restart crio || true
           systemctl enable --now kubelet
@@ -78,6 +119,17 @@ storage:
 
           APISERVER_IP=$(ip -4 -o addr show dev eth1 | awk '{print $4}' | cut -d/ -f1)
           [ -n "$APISERVER_IP" ] || { echo "Could not determine APISERVER_IP on eth1"; exit 1; }
+
+          PUBLIC_IP=$(ip -4 -o addr show dev eth0 | awk '{print $4}' | cut -d/ -f1)
+          [ -n "$PUBLIC_IP" ] || { echo "Could not determine PUBLIC_IP on eth0"; exit 1; }
+
+
+          # hostname variants
+          HN="$(hostname -s)"
+          FQDN="$(hostname -f 2>/dev/null || true)"
+
+          # Build CERT_SANS
+          CERT_SANS="$PUBLIC_IP,$APISERVER_IP,$HN,$FQDN"
 
           %{ if master_is_primary }
           # Primary master
@@ -95,6 +147,8 @@ storage:
           kubeadm init \
             --pod-network-cidr=${pod_network_cidr} \
             --apiserver-advertise-address="$APISERVER_IP" \
+            --control-plane-endpoint="$PUBLIC_IP:6443" \
+            --apiserver-cert-extra-sans="$CERT_SANS" \
             --cri-socket=unix:///var/run/crio/crio.sock \
             $CONTROL_PLANE_FLAG
 
@@ -175,6 +229,56 @@ storage:
 
 systemd:
   units:
+    - name: var-lib-kubelet.mount
+      enabled: true
+      contents: |
+        [Unit]
+        After=var-lib-k8s.mount
+        Requires=var-lib-k8s.mount
+        [Mount]
+        What=/var/lib/k8s/kubelet
+        Where=/var/lib/kubelet
+        Type=none
+        Options=bind
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: var-lib-containers.mount
+      enabled: true
+      contents: |
+        [Unit]
+        After=var-lib-k8s.mount
+        Requires=var-lib-k8s.mount
+        [Mount]
+        What=/var/lib/k8s/containers
+        Where=/var/lib/containers
+        Type=none
+        Options=bind
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: var-lib-etcd.mount
+      enabled: true
+      contents: |
+        [Unit]
+        After=var-lib-k8s.mount
+        Requires=var-lib-k8s.mount
+        [Mount]
+        What=/var/lib/k8s/etcd
+        Where=/var/lib/etcd
+        Type=none
+        Options=bind
+        [Install]
+        WantedBy=multi-user.target
+
+    - name: kubelet.service
+      dropins:
+        - name: 10-deps.conf
+          contents: |
+            [Unit]
+            Requires=var-lib-kubelet.mount var-lib-containers.mount
+            After=var-lib-kubelet.mount var-lib-containers.mount
+
     - name: k8s-packages.service
       enabled: true
       contents: |
@@ -205,6 +309,7 @@ systemd:
         Wants=systemd-sysctl.service
         ConditionPathExists=/var/lib/k8s.packages.done
         ConditionPathExists=/usr/local/sbin/bootstrap-k8s.sh
+        ConditionPathExists=!/etc/kubernetes/admin.conf
 
         [Service]
         Type=oneshot

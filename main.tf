@@ -91,8 +91,6 @@ resource "libvirt_ignition" "worker" {
   content = data.ct_config.worker[count.index].rendered
 }
 
-
-## Building the Master Node(s)
 # --- Master OS disk ---
 resource "libvirt_volume" "hawk_master_os_disk" {
   count  = var.master_count
@@ -100,20 +98,20 @@ resource "libvirt_volume" "hawk_master_os_disk" {
   pool   = var.storage_pool
   base_volume_id = libvirt_volume.fcos_base.id
   format = "qcow2"
-  size   = 322122547200 # 300 GB
+  size   = 214748364800 # 200 GB
 
   lifecycle {
     replace_triggered_by = [libvirt_ignition.master[count.index]]
   }
 }
 
-# --- Master Data disk (200GB) ---
+# --- Master Data disk ---
 resource "libvirt_volume" "hawk_master_data_disk" {
   count  = var.master_count
   name   = "${var.cluster_name}_master_data_${format("%02d", count.index + 1)}"
   pool   = var.storage_pool
   format = "qcow2"
-  size   = 214748364800 # 200 GB
+  size   = 322122547200 # 300 GB
 }
 
 # --- Master Node ---
@@ -137,7 +135,7 @@ resource "libvirt_domain" "hawk_masters" {
 }
 
 
-## Building the worker node(s)
+
 # --- Worker OS disks (300GB) ---
 resource "libvirt_volume" "hawk_worker_os_disks" {
   count  = var.worker_count 
